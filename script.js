@@ -1,367 +1,468 @@
-// ===== API Minha Receita =====
-// Método 1: GET {API}/{cnpj}            -> consulta de um CNPJ (sem filtros)
-// Método 2: GET {API}/?uf=..&cnae=..    -> busca paginada (com filtros)
-// Método 3: GET {GRAFO}/{cnpj}          -> vínculos entre empresas e sócios
-// Método 4: GET {API}/updated           -> data de atualização da base
-const API = "https://minhareceita.org";
-const GRAFO = "https://grafo.minhareceita.org";
+var API = "https://minhareceita.org";
+var GRAFO = "https://grafo.minhareceita.org";
+var API_LOGS = "https://www.piway.com.br/unoesc/api";
+var MATRICULA = "352180";
+var NOME_DA_API = "Minha Receita";
+var listaUfs = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"];
+var cursor = "";
+var parametrosBusca = "";
 
-const UFS = ["AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI","RJ","RN","RS","RO","RR","SC","SP","SE","TO"];
-
-let cursorAtual = null;
-let paramsAtuais = null;
-
-// ---------- utilidades ----------
-const $ = (id) => document.getElementById(id);
-
-function esc(valor) {
-  const d = document.createElement("div");
-  d.textContent = valor ?? "";
-  return d.innerHTML;
+function pegar(id) {
+  return document.getElementById(id);
 }
 
-function limparCnpj(texto) {
-  return String(texto).toUpperCase().replace(/[^0-9A-Z]/g, "");
+function soNumeros(texto) {
+  return String(texto).replace(/\D/g, "");
 }
 
-function formatarCnpj(c) {
-  const s = limparCnpj(c).padStart(14, "0");
-  return `${s.slice(0,2)}.${s.slice(2,5)}.${s.slice(5,8)}/${s.slice(8,12)}-${s.slice(12)}`;
+function limpar(texto) {
+  if (texto === null || texto === undefined) {
+    return "";
+  }
+  var div = document.createElement("div");
+  div.textContent = texto;
+  return div.innerHTML;
 }
 
-// Valida dígitos verificadores (funciona também para o CNPJ alfanumérico)
-function cnpjValido(c) {
-  if (!/^[0-9A-Z]{12}[0-9]{2}$/.test(c)) return false;
-  if (/^(.)\1+$/.test(c)) return false;
-  const valores = [...c].map((ch) => ch.charCodeAt(0) - 48);
-  const dv = (qtd) => {
-    let peso = qtd - 7, soma = 0;
-    for (let i = 0; i < qtd; i++) {
-      soma += valores[i] * peso;
-      peso = peso === 2 ? 9 : peso - 1;
+function formatarCnpj(cnpj) {
+  var n = ("00000000000000" + soNumeros(cnpj)).slice(-14);
+  return n.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+}
+
+function formatarData(data) {
+  if (!data) {
+    return "-";
+  }
+  var p = String(data).substring(0, 10).split("-");
+  return p.length == 3 ? p[2] + "/" + p[1] + "/" + p[0] : data;
+}
+
+function formatarDinheiro(valor) {
+  if (valor === null || valor === undefined || valor === "") {
+    return "-";
+  }
+  return Number(valor).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function formatarTelefone(tel) {
+  var n = soNumeros(tel || "");
+  if (n.length < 10) {
+    return tel || "";
+  }
+  return "(" + n.substring(0, 2) + ") " + n.substring(2, n.length - 4) + "-" + n.substring(n.length - 4);
+}
+
+function digitoCpf(cpf, tamanho) {
+  var soma = 0;
+  for (var i = 0; i < tamanho; i++) {
+    soma = soma + Number(cpf[i]) * (tamanho + 1 - i);
+  }
+  var d = (soma * 10) % 11;
+  return d == 10 ? 0 : d;
+}
+
+function cpfValido(cpf) {
+  if (cpf.length != 11 || cpf == cpf[0].repeat(11)) {
+    return false;
+  }
+  return digitoCpf(cpf, 9) == Number(cpf[9]) && digitoCpf(cpf, 10) == Number(cpf[10]);
+}
+
+function exibirMensagem(id, mensagem, tipo) {
+  pegar(id).innerHTML = mensagem == "" ? "" : '<div class="alert alert-' + tipo + ' mb-0">' + limpar(mensagem) + "</div>";
+}
+
+function botaoCarregando(idBotao, carregando) {
+  var botao = pegar(idBotao);
+  botao.disabled = carregando;
+  botao.querySelector(".rotulo").classList.toggle("d-none", carregando);
+  botao.querySelector(".carregando").classList.toggle("d-none", !carregando);
+}
+
+function classeSituacao(situacao) {
+  return situacao == "ATIVA" ? "sit-ativa" : "sit-outra";
+}
+
+async function chamarApi(url) {
+  var resposta;
+  try {
+    resposta = await fetch(url);
+  } catch (falha) {
+    throw new Error("Sem conexão com o servidor de CNPJ no momento. Confira sua internet.");
+  }
+  var dados = null;
+  try {
+    dados = await resposta.json();
+  } catch (falha) {
+    dados = null;
+  }
+  if (resposta.ok == false) {
+    throw new Error(dados && dados.message ? dados.message : "O servidor retornou o código " + resposta.status + ".");
+  }
+  return dados;
+}
+
+function paraUrl(texto) {
+  return encodeURIComponent(String(texto || "-").replace(/\//g, "-"));
+}
+
+async function chamarApiLogs(caminho) {
+  var resposta = await fetch(API_LOGS + caminho, { cache: "no-store" });
+  return await resposta.text();
+}
+
+async function enviarSemResposta(caminho) {
+  try {
+    await fetch(API_LOGS + caminho, { mode: "no-cors" });
+    return true;
+  } catch (falha) {
+    return false;
+  }
+}
+
+async function registrarLog(metodo, resultado) {
+  if (MATRICULA == "") {
+    return;
+  }
+  var caminho = "/inserir/log/" + MATRICULA + "/" + paraUrl(NOME_DA_API) + "/" + paraUrl(metodo) + "/" + paraUrl(resultado);
+  try {
+    await chamarApiLogs(caminho);
+  } catch (falha) {
+    await enviarSemResposta(caminho);
+  }
+  if (pegar("modal-logs").classList.contains("show")) {
+    carregarLogs();
+  }
+}
+
+function pegarIdDoLog(log) {
+  var nomes = ["idlog", "id_log", "idLog", "IDLOG", "id", "ID", "codigo"];
+  for (var i = 0; i < nomes.length; i++) {
+    if (log[nomes[i]] !== undefined) {
+      return log[nomes[i]];
     }
-    const r = soma % 11;
-    return r < 2 ? 0 : 11 - r;
-  };
-  return dv(12) === valores[12] && dv(13) === valores[13];
+  }
+  return null;
 }
 
-function formatarData(iso) {
-  if (!iso) return "—";
-  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
-  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
-}
-
-function formatarDinheiro(v) {
-  if (v === null || v === undefined || v === "") return "—";
-  return Number(v).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function telefone(t) {
-  if (!t) return "—";
-  const s = String(t).replace(/\D/g, "");
-  if (s.length < 10) return t;
-  return `(${s.slice(0,2)}) ${s.slice(2, s.length - 4)}-${s.slice(-4)}`;
-}
-
-function endereco(e) {
-  const partes = [
-    [e.descricao_tipo_de_logradouro, e.logradouro].filter(Boolean).join(" "),
-    e.numero, e.complemento, e.bairro,
-    [e.municipio, e.uf].filter(Boolean).join("/"),
-    e.cep ? "CEP " + String(e.cep).replace(/^(\d{5})(\d{3})$/, "$1-$2") : ""
-  ].filter(Boolean);
-  return partes.join(", ") || "—";
-}
-
-function classeSituacao(desc) {
-  const d = (desc || "").toUpperCase();
-  if (d === "ATIVA") return "sit-ativa";
-  if (!d) return "sit-neutra";
-  return "sit-outra";
-}
-
-function ocupado(botaoId, sim) {
-  const b = $(botaoId);
-  b.disabled = sim;
-  b.querySelector(".rotulo").classList.toggle("d-none", sim);
-  b.querySelector(".carregando").classList.toggle("d-none", !sim);
-}
-
-function alerta(id, msg, tipo = "danger") {
-  $(id).innerHTML = msg ? `<div class="alert alert-${tipo} mb-0" role="alert">${esc(msg)}</div>` : "";
-}
-
-async function pedir(url) {
-  let resp;
+async function carregarLogs() {
+  var area = pegar("lista-logs");
+  exibirMensagem("msg-logs", "", "");
+  if (MATRICULA == "") {
+    area.innerHTML = "";
+    exibirMensagem("msg-logs", "Nenhuma matrícula configurada.", "warning");
+    return;
+  }
+  area.innerHTML = '<p class="text-muted">Buscando seus registros...</p>';
   try {
-    resp = await fetch(url, { headers: { Accept: "application/json" } });
-  } catch (e) {
-    throw new Error("Não foi possível falar com a API. Verifique sua conexão e tente de novo em instantes.");
+    var texto = await chamarApiLogs("/logs/" + MATRICULA);
+    var logs;
+    try {
+      logs = JSON.parse(texto);
+    } catch (falha) {
+      area.innerHTML = "";
+      exibirMensagem("msg-logs", texto, "warning");
+      return;
+    }
+    if (!Array.isArray(logs) && logs.msg) {
+      area.innerHTML = "";
+      exibirMensagem("msg-logs", logs.msg, "warning");
+      return;
+    }
+    if (!Array.isArray(logs) || logs.length == 0) {
+      area.innerHTML = '<p class="text-muted">Você ainda não tem registros.</p>';
+      pegar("logs-info").textContent = "Sem registros";
+      return;
+    }
+    pegar("logs-info").textContent = logs.length + " log(s) registrado(s)";
+
+    var campos = Object.keys(logs[0]);
+    var html = '<div class="table-responsive"><table class="table table-striped tabela-logs"><thead><tr>';
+    for (var i = 0; i < campos.length; i++) {
+      html += "<th>" + limpar(campos[i]) + "</th>";
+    }
+    html += "<th>Ação</th></tr></thead><tbody>";
+    for (var j = 0; j < logs.length; j++) {
+      var id = pegarIdDoLog(logs[j]);
+      html += "<tr>";
+      for (var k = 0; k < campos.length; k++) {
+        html += "<td>" + limpar(logs[j][campos[k]]) + "</td>";
+      }
+      html += id !== null ? '<td><button type="button" class="btn btn-outline-danger btn-sm" onclick="excluirLog(\'' + id + '\')">Excluir</button></td>' : "<td>-</td>";
+      html += "</tr>";
+    }
+    area.innerHTML = html + "</tbody></table></div>";
+  } catch (falha) {
+    area.innerHTML = "";
+    exibirMensagem("msg-logs", "Falha ao buscar os registros: " + falha.message, "danger");
   }
-  let corpo = null;
-  try { corpo = await resp.json(); } catch (e) { /* resposta sem JSON */ }
-  if (!resp.ok) {
-    const msg = corpo && corpo.message ? corpo.message : `A API respondeu com erro ${resp.status}.`;
-    throw new Error(msg);
-  }
-  return corpo;
 }
 
-function mostrarAba(id) {
-  bootstrap.Tab.getOrCreateInstance($(id)).show();
-}
-
-// ---------- Método 4: /updated ----------
-async function carregarAtualizacao() {
+async function excluirLog(idLog) {
+  if (confirm("Remover este registro?") == false) {
+    return;
+  }
+  var caminho = "/excluir/log/" + idLog + "/aluno/" + MATRICULA;
+  var mensagem = "Registro removido.";
   try {
-    const dados = await pedir(`${API}/updated`);
-    const texto = JSON.stringify(dados);
-    const m = texto.match(/(\d{4})-(\d{2})-(\d{2})/);
-    $("atualizado-txt").textContent = m
-      ? `Base da Receita de ${m[3]}/${m[2]}/${m[1]}`
-      : "Base da Receita Federal";
-  } catch (e) {
-    $("atualizado-txt").textContent = "Base da Receita Federal";
+    var texto = await chamarApiLogs(caminho);
+    try {
+      mensagem = JSON.parse(texto).msg || mensagem;
+    } catch (falha) {
+      mensagem = texto;
+    }
+  } catch (falha) {
+    if (await enviarSemResposta(caminho) == false) {
+      exibirMensagem("msg-logs", "Falha ao remover o registro.", "danger");
+      return;
+    }
   }
+  await carregarLogs();
+  exibirMensagem("msg-logs", mensagem, "success");
 }
 
-// ---------- Método 1: consulta por CNPJ (sem filtros, resultado único) ----------
-function dado(rotulo, valor) {
-  return `<div class="col-12 col-sm-6 col-lg-4 dado"><span class="rot">${esc(rotulo)}</span><span class="val">${esc(valor || "—")}</span></div>`;
+function montarDado(titulo, valor) {
+  return '<div class="col-12 col-sm-6 col-lg-4 dado"><span class="rot">' + titulo + '</span><span class="val">' + limpar(valor || "-") + "</span></div>";
 }
 
-function renderFicha(e) {
-  const socios = e.qsa || [];
-  const cnaes = e.cnaes_secundarios || [];
-  const fone = [e.ddd_telefone_1, e.ddd_telefone_2].filter(Boolean).map(telefone).join(" · ");
+function montarLista(itens, vazio) {
+  if (itens.length == 0) {
+    return '<p class="text-muted mb-0">' + vazio + "</p>";
+  }
+  return '<ul class="lista-simples">' + itens.join("") + "</ul>";
+}
 
-  const htmlSocios = socios.length
-    ? `<ul class="lista-simples">${socios.map((s) => `
-        <li><strong>${esc(s.nome_socio)}</strong>
-          <span class="sub">${esc(s.qualificacao_socio || "")}${s.data_entrada_sociedade ? " · desde " + formatarData(s.data_entrada_sociedade) : ""}</span>
-        </li>`).join("")}</ul>`
-    : `<p class="text-muted mb-0">Nenhum sócio informado.</p>`;
+function montarFicha(empresa) {
+  var socios = empresa.qsa || [];
+  var cnaes = empresa.cnaes_secundarios || [];
 
-  const htmlCnaes = cnaes.length
-    ? `<ul class="lista-simples">${cnaes.slice(0, 15).map((c) => `
-        <li><span class="cnpj-num">${esc(c.codigo)}</span> <span>${esc(c.descricao)}</span></li>`).join("")}</ul>
-       ${cnaes.length > 15 ? `<p class="small text-muted mt-2 mb-0">+ ${cnaes.length - 15} atividades não exibidas.</p>` : ""}`
-    : `<p class="text-muted mb-0">Sem atividades secundárias.</p>`;
+  var endereco = (empresa.descricao_tipo_de_logradouro || "") + " " + (empresa.logradouro || "") + ", " + (empresa.numero || "") +
+    " - " + (empresa.bairro || "") + ", " + (empresa.municipio || "") + "/" + (empresa.uf || "") + " - CEP " + (empresa.cep || "");
+  var atividade = empresa.cnae_fiscal ? empresa.cnae_fiscal + " - " + empresa.cnae_fiscal_descricao : "";
 
-  return `
-  <article class="ficha">
-    <div class="ficha-topo">
-      <h2>${esc(e.razao_social)}</h2>
-      <div class="fantasia">${esc(e.nome_fantasia || "Sem nome fantasia")}</div>
-      <div class="mt-2">
-        <span class="sit ${classeSituacao(e.descricao_situacao_cadastral)}">${esc(e.descricao_situacao_cadastral || "Situação não informada")}</span>
-        <span class="ms-2 cnpj-num">${formatarCnpj(e.cnpj)}</span>
-      </div>
-    </div>
-    <div class="ficha-corpo">
-      <div class="row">
-        ${dado("Tipo", e.descricao_identificador_matriz_filial)}
-        ${dado("Abertura", formatarData(e.data_inicio_atividade))}
-        ${dado("Situação desde", formatarData(e.data_situacao_cadastral))}
-        ${dado("Natureza jurídica", e.natureza_juridica)}
-        ${dado("Porte", e.porte)}
-        ${dado("Capital social", formatarDinheiro(e.capital_social))}
-        ${dado("Atividade principal", e.cnae_fiscal ? `${e.cnae_fiscal} — ${e.cnae_fiscal_descricao}` : "")}
-        ${dado("Telefone", fone)}
-        ${dado("Simples Nacional", e.opcao_pelo_simples ? "Optante" : "Não optante")}
-        ${dado("MEI", e.opcao_pelo_mei ? "Sim" : "Não")}
-        <div class="col-12 dado"><span class="rot">Endereço</span><span class="val">${esc(endereco(e))}</span></div>
-      </div>
+  var itensSocios = [];
+  for (var i = 0; i < socios.length; i++) {
+    itensSocios.push("<li><strong>" + limpar(socios[i].nome_socio) + '</strong><span class="sub">' + limpar(socios[i].qualificacao_socio) +
+      " - entrada em " + formatarData(socios[i].data_entrada_sociedade) + "</span></li>");
+  }
+  var itensCnaes = [];
+  for (var j = 0; j < cnaes.length && j < 15; j++) {
+    itensCnaes.push('<li><span class="cnpj-num">' + limpar(cnaes[j].codigo) + "</span> " + limpar(cnaes[j].descricao) + "</li>");
+  }
+  var avisoCnaes = cnaes.length > 15 ? '<p class="small text-muted mt-2 mb-0">Exibindo 15 de ' + cnaes.length + " atividades.</p>" : "";
 
-      <div class="row g-4">
-        <div class="col-12 col-lg-6">
-          <h3 class="secao-titulo"><i class="bi bi-people me-1"></i>Quadro societário (${socios.length})</h3>
-          ${htmlSocios}
-        </div>
-        <div class="col-12 col-lg-6">
-          <h3 class="secao-titulo"><i class="bi bi-list-check me-1"></i>Atividades secundárias (${cnaes.length})</h3>
-          ${htmlCnaes}
-        </div>
-      </div>
-
-      <div class="mt-4">
-        <button type="button" class="btn btn-outline-dark btn-sm" onclick="verVinculos('${esc(limparCnpj(e.cnpj))}')">
-          <i class="bi bi-diagram-3 me-1"></i> Ver vínculos desta empresa
-        </button>
-      </div>
-    </div>
-  </article>`;
+  return '<article class="ficha"><div class="ficha-topo">' +
+    "<h1>" + limpar(empresa.razao_social) + "</h1>" +
+    '<div class="fantasia">' + limpar(empresa.nome_fantasia || "Sem nome fantasia") + "</div>" +
+    '<div class="mt-2"><span class="sit ' + classeSituacao(empresa.descricao_situacao_cadastral) + '">' + limpar(empresa.descricao_situacao_cadastral) + "</span> " +
+    '<span class="ms-2 cnpj-num">' + formatarCnpj(empresa.cnpj) + "</span></div></div>" +
+    '<div class="ficha-corpo"><div class="row">' +
+    montarDado("Tipo", empresa.descricao_identificador_matriz_filial) +
+    montarDado("Abertura", formatarData(empresa.data_inicio_atividade)) +
+    montarDado("Situação desde", formatarData(empresa.data_situacao_cadastral)) +
+    montarDado("Natureza jurídica", empresa.natureza_juridica) +
+    montarDado("Porte", empresa.porte) +
+    montarDado("Capital social", formatarDinheiro(empresa.capital_social)) +
+    montarDado("Atividade principal", atividade) +
+    montarDado("Telefone", formatarTelefone(empresa.ddd_telefone_1)) +
+    montarDado("Simples Nacional", empresa.opcao_pelo_simples ? "Optante" : "Não optante") +
+    montarDado("MEI", empresa.opcao_pelo_mei ? "Sim" : "Não") +
+    '<div class="col-12 dado"><span class="rot">Endereço</span><span class="val">' + limpar(endereco) + "</span></div></div>" +
+    '<div class="row g-4">' +
+    '<div class="col-12 col-lg-6"><h3 class="secao-titulo">Quadro societário (' + socios.length + ")</h3>" + montarLista(itensSocios, "Esta empresa não tem sócios cadastrados.") + "</div>" +
+    '<div class="col-12 col-lg-6"><h3 class="secao-titulo">Atividades secundárias (' + cnaes.length + ")</h3>" + montarLista(itensCnaes, "Sem atividades secundárias.") + avisoCnaes + "</div></div>" +
+    '<div class="mt-4"><button type="button" class="btn btn-outline-dark btn-sm" onclick="verVinculos(\'' + soNumeros(empresa.cnpj) + '\')">Ver vínculos desta empresa</button></div>' +
+    "</div></article>";
 }
 
 async function consultarCnpj(valor) {
-  const cnpj = limparCnpj(valor);
-  alerta("alerta-cnpj", "");
-  $("resultado-cnpj").innerHTML = "";
-
-  if (cnpj.length !== 14) return alerta("alerta-cnpj", "O CNPJ precisa ter 14 caracteres.", "warning");
-  if (!cnpjValido(cnpj)) return alerta("alerta-cnpj", "CNPJ inválido: os dígitos verificadores não conferem.", "warning");
-
-  ocupado("btn-cnpj", true);
+  var cnpj = soNumeros(valor);
+  exibirMensagem("msg-cnpj", "", "");
+  pegar("resultado-cnpj").innerHTML = "";
+  if (cnpj.length != 14) {
+    exibirMensagem("msg-cnpj", "Digite um CNPJ com 14 números.", "warning");
+    return;
+  }
+  botaoCarregando("btn-cnpj", true);
   try {
-    const empresa = await pedir(`${API}/${cnpj}`);
-    $("resultado-cnpj").innerHTML = renderFicha(empresa);
-  } catch (e) {
-    alerta("alerta-cnpj", e.message);
-  } finally {
-    ocupado("btn-cnpj", false);
+    var empresa = await chamarApi(API + "/" + cnpj);
+    pegar("resultado-cnpj").innerHTML = montarFicha(empresa);
+    registrarLog("Consultar CNPJ " + cnpj, empresa.razao_social);
+  } catch (falha) {
+    exibirMensagem("msg-cnpj", falha.message, "danger");
   }
+  botaoCarregando("btn-cnpj", false);
 }
 
-// ---------- Método 2: busca com filtros (lista com repetição) ----------
-function renderCartao(e) {
-  return `
-  <div class="col-12 col-md-6 col-xl-4">
-    <button type="button" class="cartao" data-cnpj="${esc(limparCnpj(e.cnpj))}">
-      <div class="nome">${esc(e.razao_social)}</div>
-      <div class="cnpj-num mb-1">${formatarCnpj(e.cnpj)}</div>
-      <div class="meta">${esc(e.nome_fantasia || "Sem nome fantasia")}</div>
-      <div class="meta"><i class="bi bi-geo-alt me-1"></i>${esc([e.municipio, e.uf].filter(Boolean).join("/") || "—")}</div>
-      <div class="meta mt-1"><span class="sit ${classeSituacao(e.descricao_situacao_cadastral)}">${esc(e.descricao_situacao_cadastral || "—")}</span></div>
-    </button>
-  </div>`;
+function montarCartao(empresa) {
+  return '<div class="col-12 col-md-6 col-xl-4"><button type="button" class="cartao" data-cnpj="' + soNumeros(empresa.cnpj) + '">' +
+    '<div class="nome">' + limpar(empresa.razao_social) + "</div>" +
+    '<div class="cnpj-num mb-1">' + formatarCnpj(empresa.cnpj) + "</div>" +
+    '<div class="meta">' + limpar(empresa.nome_fantasia || "Sem nome fantasia") + "</div>" +
+    '<div class="meta">' + limpar((empresa.municipio || "-") + "/" + (empresa.uf || "-")) + "</div>" +
+    '<div class="meta mt-1"><span class="sit ' + classeSituacao(empresa.descricao_situacao_cadastral) + '">' + limpar(empresa.descricao_situacao_cadastral) + "</span></div>" +
+    "</button></div>";
 }
 
-function lerFiltros() {
-  const p = new URLSearchParams();
-  const campos = { uf: "f-uf", cnae: "f-cnae", municipio: "f-municipio", natureza_juridica: "f-natureza" };
-  for (const [param, id] of Object.entries(campos)) {
-    const v = $(id).value.trim();
-    if (v) p.set(param, v);
-  }
-  return p;
-}
-
-async function buscarEmpresas(maisPaginas) {
-  alerta("alerta-busca", "");
-  if (!maisPaginas) {
-    const filtros = lerFiltros();
-    if ([...filtros.keys()].length === 0) {
-      return alerta("alerta-busca", "Escolha pelo menos um filtro para buscar.", "warning");
+function montarFiltros() {
+  var campos = { uf: "f-uf", cnae: "f-cnae", municipio: "f-municipio", natureza_juridica: "f-natureza" };
+  var filtros = "";
+  for (var nome in campos) {
+    var valor = pegar(campos[nome]).value;
+    if (valor != "") {
+      filtros += "&" + nome + "=" + valor;
     }
-    filtros.set("limit", $("f-limit").value);
-    paramsAtuais = filtros;
-    cursorAtual = null;
-    $("resultado-busca").innerHTML = `<div class="row g-3" id="grade-busca"></div>`;
   }
+  var cpf = soNumeros(pegar("f-cpf").value);
+  if (cpf != "") {
+    filtros += "&cnpf=" + encodeURIComponent("***" + cpf.substring(3, 9) + "**");
+  }
+  return filtros;
+}
 
-  const p = new URLSearchParams(paramsAtuais);
-  if (cursorAtual) p.set("cursor", cursorAtual);
+async function buscarEmpresas(carregarMais) {
+  exibirMensagem("msg-busca", "", "");
 
-  ocupado("btn-busca", true);
-  $("btn-mais").disabled = true;
-  try {
-    const resp = await pedir(`${API}/?${p.toString()}`);
-    const lista = resp.data || [];
-    const grade = $("grade-busca");
-
-    if (!maisPaginas && lista.length === 0) {
-      $("resultado-busca").innerHTML = `<p class="text-muted">Nenhuma empresa encontrada com esses filtros.</p>`;
-      $("mais-wrap").classList.add("d-none");
+  if (carregarMais == false) {
+    var cpf = soNumeros(pegar("f-cpf").value);
+    if (cpf != "" && cpfValido(cpf) == false) {
+      exibirMensagem("msg-busca", "Esse CPF não é válido.", "warning");
       return;
     }
-    grade.insertAdjacentHTML("beforeend", lista.map(renderCartao).join(""));
-    cursorAtual = resp.cursor || null;
-    $("mais-wrap").classList.toggle("d-none", !cursorAtual);
-  } catch (e) {
-    alerta("alerta-busca", e.message);
-  } finally {
-    ocupado("btn-busca", false);
-    $("btn-mais").disabled = false;
+    if (cpf != "" && pegar("f-uf").value == "") {
+      exibirMensagem("msg-busca", "Para buscar pelo CPF do sócio, selecione também um estado.", "warning");
+      return;
+    }
+    var filtros = montarFiltros();
+    if (filtros == "") {
+      exibirMensagem("msg-busca", "Preencha pelo menos um campo de busca.", "warning");
+      return;
+    }
+    parametrosBusca = filtros + "&limit=" + pegar("f-limit").value;
+    cursor = "";
+    pegar("resultado-busca").innerHTML = '<div class="row g-3" id="grade-busca"></div>';
   }
+
+  var url = API + "/?" + parametrosBusca.substring(1);
+  if (cursor != "") {
+    url += "&cursor=" + encodeURIComponent(cursor);
+  }
+
+  botaoCarregando("btn-busca", true);
+  pegar("btn-mais").disabled = true;
+  try {
+    var resposta = await chamarApi(url);
+    var lista = resposta.data || [];
+    registrarLog("Buscar empresas com filtros", lista.length + " empresas encontradas");
+
+    if (carregarMais == false && lista.length == 0) {
+      pegar("resultado-busca").innerHTML = '<p class="text-muted">Não achei empresas com esses dados.</p>';
+    } else {
+      var html = "";
+      for (var i = 0; i < lista.length; i++) {
+        html += montarCartao(lista[i]);
+      }
+      pegar("grade-busca").insertAdjacentHTML("beforeend", html);
+      cursor = resposta.cursor || "";
+    }
+    pegar("mais-wrap").classList.toggle("d-none", cursor == "");
+  } catch (falha) {
+    exibirMensagem("msg-busca", falha.message, "danger");
+  }
+  botaoCarregando("btn-busca", false);
+  pegar("btn-mais").disabled = false;
 }
 
-// ---------- Método 3: vínculos (grafo) ----------
 async function consultarVinculos(valor) {
-  const cnpj = limparCnpj(valor);
-  alerta("alerta-grafo", "");
-  $("resultado-grafo").innerHTML = "";
-
-  if (!cnpjValido(cnpj)) return alerta("alerta-grafo", "Informe um CNPJ válido (14 caracteres).", "warning");
-
-  ocupado("btn-grafo", true);
-  try {
-    const lista = await pedir(`${GRAFO}/${cnpj}`);
-    if (!Array.isArray(lista) || lista.length === 0) {
-      $("resultado-grafo").innerHTML = `<p class="text-muted">Nenhum vínculo encontrado para ${formatarCnpj(cnpj)}.</p>`;
-      return;
-    }
-    $("resultado-grafo").innerHTML = `
-      <h3 class="secao-titulo">${lista.length} vínculo(s) encontrado(s)</h3>
-      <div class="row g-3">
-        ${lista.map((v) => `
-          <div class="col-12 col-md-6 col-xl-4">
-            <div class="cartao">
-              <div class="nome"><i class="bi bi-person me-1"></i>${esc(v.nome || "—")}</div>
-              <div class="meta">${esc(v.cpf || "")}</div>
-              <div class="meta mt-1"><i class="bi bi-building me-1"></i>${esc(v.razao_social || "—")}</div>
-              <div class="cnpj-num">${v.cnpj ? formatarCnpj(v.cnpj) : ""}</div>
-            </div>
-          </div>`).join("")}
-      </div>`;
-  } catch (e) {
-    alerta("alerta-grafo", e.message);
-  } finally {
-    ocupado("btn-grafo", false);
+  var cnpj = soNumeros(valor);
+  exibirMensagem("msg-grafo", "", "");
+  pegar("resultado-grafo").innerHTML = "";
+  if (cnpj.length != 14) {
+    exibirMensagem("msg-grafo", "Digite um CNPJ com 14 números.", "warning");
+    return;
   }
+  botaoCarregando("btn-grafo", true);
+  try {
+    var lista = await chamarApi(GRAFO + "/" + cnpj);
+    registrarLog("Vínculos do CNPJ " + cnpj, (lista ? lista.length : 0) + " vínculos");
+
+    if (!lista || lista.length == 0) {
+      pegar("resultado-grafo").innerHTML = '<p class="text-muted">Essa empresa não tem vínculos cadastrados.</p>';
+    } else {
+      var html = '<h3 class="secao-titulo">' + lista.length + ' vínculo(s) encontrado(s)</h3><div class="row g-3">';
+      for (var i = 0; i < lista.length; i++) {
+        var v = lista[i];
+        html += '<div class="col-12 col-md-6 col-xl-4"><div class="cartao">' +
+          '<div class="nome">' + limpar(v.nome || "-") + "</div>" +
+          '<div class="meta">' + limpar(v.cpf || "") + "</div>" +
+          '<div class="meta mt-1">' + limpar(v.razao_social || "-") + "</div>" +
+          '<div class="cnpj-num">' + (v.cnpj ? formatarCnpj(v.cnpj) : "") + "</div></div></div>";
+      }
+      pegar("resultado-grafo").innerHTML = html + "</div>";
+    }
+  } catch (falha) {
+    exibirMensagem("msg-grafo", falha.message, "danger");
+  }
+  botaoCarregando("btn-grafo", false);
 }
 
-// ---------- atalhos entre abas ----------
+function abrirAba(idAba) {
+  new bootstrap.Tab(pegar(idAba)).show();
+}
+
 function abrirEmpresa(cnpj) {
-  $("cnpj").value = formatarCnpj(cnpj);
-  mostrarAba("tab-cnpj");
+  pegar("cnpj").value = formatarCnpj(cnpj);
+  abrirAba("tab-cnpj");
   consultarCnpj(cnpj);
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  window.scrollTo(0, 0);
 }
 
 function verVinculos(cnpj) {
-  $("cnpj-grafo").value = formatarCnpj(cnpj);
-  mostrarAba("tab-grafo");
+  pegar("cnpj-grafo").value = formatarCnpj(cnpj);
+  abrirAba("tab-grafo");
   consultarVinculos(cnpj);
 }
 
-// ---------- inicialização ----------
-function mascara(input) {
-  input.addEventListener("input", () => {
-    const s = limparCnpj(input.value).slice(0, 14);
-    let out = s;
-    if (s.length > 12) out = `${s.slice(0,2)}.${s.slice(2,5)}.${s.slice(5,8)}/${s.slice(8,12)}-${s.slice(12)}`;
-    else if (s.length > 8) out = `${s.slice(0,2)}.${s.slice(2,5)}.${s.slice(5,8)}/${s.slice(8)}`;
-    else if (s.length > 5) out = `${s.slice(0,2)}.${s.slice(2,5)}.${s.slice(5)}`;
-    else if (s.length > 2) out = `${s.slice(0,2)}.${s.slice(2)}`;
-    input.value = out;
+document.addEventListener("DOMContentLoaded", function () {
+  for (var i = 0; i < listaUfs.length; i++) {
+    pegar("f-uf").innerHTML += "<option>" + listaUfs[i] + "</option>";
+  }
+
+  pegar("form-cnpj").addEventListener("submit", function (e) {
+    e.preventDefault();
+    consultarCnpj(pegar("cnpj").value);
   });
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  $("f-uf").insertAdjacentHTML("beforeend", UFS.map((u) => `<option>${u}</option>`).join(""));
-  ["f-cnae", "f-municipio"].forEach((id) =>
-    $(id).addEventListener("input", (ev) => (ev.target.value = ev.target.value.replace(/\D/g, ""))));
-  mascara($("cnpj"));
-  mascara($("cnpj-grafo"));
-
-  $("form-cnpj").addEventListener("submit", (ev) => { ev.preventDefault(); consultarCnpj($("cnpj").value); });
-  $("form-busca").addEventListener("submit", (ev) => { ev.preventDefault(); buscarEmpresas(false); });
-  $("form-grafo").addEventListener("submit", (ev) => { ev.preventDefault(); consultarVinculos($("cnpj-grafo").value); });
-  $("btn-mais").addEventListener("click", () => buscarEmpresas(true));
-  $("btn-limpar").addEventListener("click", () => {
-    $("form-busca").reset();
-    $("resultado-busca").innerHTML = "";
-    $("mais-wrap").classList.add("d-none");
-    alerta("alerta-busca", "");
+  pegar("form-busca").addEventListener("submit", function (e) {
+    e.preventDefault();
+    buscarEmpresas(false);
+  });
+  pegar("form-grafo").addEventListener("submit", function (e) {
+    e.preventDefault();
+    consultarVinculos(pegar("cnpj-grafo").value);
+  });
+  pegar("btn-mais").addEventListener("click", function () {
+    buscarEmpresas(true);
+  });
+  pegar("btn-limpar").addEventListener("click", function () {
+    pegar("form-busca").reset();
+    pegar("resultado-busca").innerHTML = "";
+    pegar("mais-wrap").classList.add("d-none");
+    exibirMensagem("msg-busca", "", "");
   });
 
-  document.querySelectorAll(".chip").forEach((b) =>
-    b.addEventListener("click", () => abrirEmpresa(b.dataset.cnpj)));
-  $("resultado-busca").addEventListener("click", (ev) => {
-    const c = ev.target.closest("button.cartao");
-    if (c) abrirEmpresa(c.dataset.cnpj);
+  var chips = document.querySelectorAll(".chip");
+  for (var c = 0; c < chips.length; c++) {
+    chips[c].addEventListener("click", function () {
+      abrirEmpresa(this.getAttribute("data-cnpj"));
+    });
+  }
+  pegar("resultado-busca").addEventListener("click", function (e) {
+    var cartao = e.target.closest("button.cartao");
+    if (cartao) {
+      abrirEmpresa(cartao.getAttribute("data-cnpj"));
+    }
   });
 
-  carregarAtualizacao();
+  pegar("modal-logs").addEventListener("show.bs.modal", carregarLogs);
+  pegar("btn-atualizar-logs").addEventListener("click", carregarLogs);
 });
